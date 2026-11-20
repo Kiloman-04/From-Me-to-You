@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>From Me to You — Private Editor</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:24px;background:#f8eef1;color:#351522;font-family:Arial,sans-serif}
+main{max-width:720px;margin:20px auto;background:#fffaf8;border:1px solid #ead3da;border-radius:20px;padding:28px;box-shadow:0 12px 40px #4b1d2b12}
+h1{font:italic 36px Georgia;margin:0 0 4px}
+.sub{color:#805969;margin:0 0 24px}
+label{display:block;font-size:13px;font-weight:700;margin:16px 0 7px}
+input,textarea{width:100%;padding:12px;border:1px solid #d8bbc5;border-radius:10px;font:15px Arial;background:white;color:#351522}
+textarea{min-height:130px;resize:vertical}
+button{border:0;border-radius:10px;padding:12px 16px;background:#632d43;color:white;font-weight:700;cursor:pointer;margin:14px 8px 0 0}
+button.secondary{background:#ead3da;color:#351522}
+.hint{font-size:13px;line-height:1.55;color:#765563}
+#status{margin-top:16px;font-size:14px;color:#4f713f;white-space:pre-wrap}
+.entry{padding:14px 0;border-bottom:1px solid #ead3da}
+.entry button{margin:0 0 0 8px;padding:7px 10px;font-size:12px}
+.preview{max-width:100%;max-height:180px;display:block;margin-top:10px;border-radius:10px}
+</style>
+</head>
+<body>
+<main>
+<h1>From Me to You</h1>
+<p class="sub">Private message editor</p>
+<p class="hint"><b>Important:</b> Paste your existing private key and import your current <code>messages.enc.json</code>. This loads your saved dates so you can edit them without losing them. Do not create a new key. After editing, download the newly encrypted file and replace the old <code>messages.enc.json</code> in GitHub.</p>
+
+<label for="key">Private encryption key</label>
+<input id="key" type="text" autocomplete="off" placeholder="Paste your saved private key">
+
+<label for="importFile">Import your current encrypted messages file</label>
+<input id="importFile" type="file" accept=".json,application/json">
+
+<label for="date">Message date</label>
+<input id="date" type="date">
+
+<label for="nickname">Sender nickname for this date</label>
+<input id="nickname" placeholder="e.g. Someone who cares">
+
+<label for="message">Message</label>
+<textarea id="message" placeholder="Write your little message here…"></textarea>
+
+<label for="closing">Closing line for this date</label>
+<input id="closing" placeholder="e.g. A little love, just for you.">
+
+<label for="imageFile">Optional image or GIF (max 1 MB)</label>
+<input id="imageFile" type="file" accept="image/*">
+<img id="imagePreview" class="preview" alt="Image preview" hidden>
+
+<label for="audioFile">Music for this date — MP3 (max 3 MB)</label>
+<input id="audioFile" type="file" accept="audio/mpeg,audio/mp3,.mp3">
+
+<label for="songTitle">Song title (optional)</label>
+<input id="songTitle" placeholder="e.g. A song that reminds me of you">
+<p class="hint">The recipient will tap Play to listen while reading. Phones usually do not allow a website to start music automatically.</p>
+
+<button id="save" type="button">Save / update date</button>
+<button id="remove" class="secondary" type="button">Delete date</button>
+<button id="export" type="button">Encrypt &amp; download messages.enc.json</button>
+
+<div id="status" role="status" aria-live="polite"></div>
+<div id="list"></div>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let entries = {};
+
+/*
+ * Convert bytes to Base64 in small chunks.
+ * This avoids the "Maximum call stack size exceeded" error caused by
+ * spreading a large Uint8Array into String.fromCharCode at once.
+ */
+function encodeBase64(buffer) {
+  const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < data.length; offset += chunkSize) {
+    const chunk = data.subarray(offset, Math.min(offset + chunkSize, data.length));
+    binary += String.fromCharCode.apply(null, chunk);
+  }
+  return btoa(binary);
+}
+
+function decodeBase64(value) {
+  const binary = atob(value);
+  const result = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) result[i] = binary.charCodeAt(i);
+  return result;
+}
+
+function validKey() {
+  const value = $("key").value.trim();
+  if (!value) throw new Error("Paste your existing private key first.");
+  return value;
+}
+
+async function importEntries(file) {
+  const keyText = validKey();
+  const data = JSON.parse(await file.text());
+
+  if (data.algorithm !== "AES-GCM" || !data.iv || !data.ciphertext) {
+    throw new Error("That does not look like the encrypted messages file.");
+  }
+
+  const key = await crypto.subtle.importKey(
+    "raw", decodeBase64(keyText), {name:"AES-GCM"}, false, ["decrypt"]
+  );
+  const plain = await crypto.subtle.decrypt(
+    {name:"AES-GCM", iv:decodeBase64(data.iv)},
+    key,
+    decodeBase64(data.ciphertext)
+  );
+
+  const loaded = JSON.parse(new TextDecoder().decode(plain));
+  if (!loaded || typeof loaded !== "object" || Array.isArray(loaded)) {
+    throw new Error("The decrypted message data has an unexpected format.");
+  }
+
+  entries = loaded;
+  render();
+  $("status").textContent = "Your saved messages have been imported. Choose a date to edit it.";
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, char => ({
+    "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+  }[char]));
+}
+
+function render() {
+  const dates = Object.keys(entries).sort();
+  $("list").innerHTML = dates.length
+    ? "<h3>Saved dates</h3>" + dates.map(date =>
+        `<div class="entry"><b>${escapeHtml(date)}</b> — ${escapeHtml(entries[date].nickname || "No nickname")}<br>` +
+        `${escapeHtml((entries[date].message || "").slice(0,100))}` +
+        ` <button type="button" data-date="${escapeHtml(date)}">Edit this date</button></div>`
+      ).join("")
+    : "";
+}
+
+function showImagePreview(source) {
+  const preview = $("imagePreview");
+  if (source) {
+    preview.src = source;
+    preview.hidden = false;
+  } else {
+    preview.removeAttribute("src");
+    preview.hidden = true;
+  }
+}
+
+function loadSelected() {
+  const entry = entries[$("date").value];
+  $("nickname").value = entry?.nickname || "";
+  $("message").value = entry?.message || "";
+  $("closing").value = entry?.closing || "";
+  $("songTitle").value = entry?.songTitle || "";
+  $("imageFile").value = "";
+  $("audioFile").value = "";
+  showImagePreview(entry?.image || "");
+  $("status").textContent = entry
+    ? (entry.audio ? "Date loaded. Existing image/music will be kept unless you choose replacement files." : "Date loaded. Existing image will be kept unless you choose a replacement.")
+    : "No saved message for this date yet.";
+}
+
+function readAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Could not read the selected file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+$("importFile").onchange = async () => {
+  try {
+    const file = $("importFile").files[0];
+    if (file) await importEntries(file);
+  } catch (error) {
+    $("status").textContent = "Import failed: " + error.message +
+      " Check that you pasted the same key used for this file.";
+  }
+};
+
+$("date").onchange = loadSelected;
+
+$("list").onclick = event => {
+  const button = event.target.closest("button[data-date]");
+  if (!button) return;
+  $("date").value = button.dataset.date;
+  loadSelected();
+};
+
+$("imageFile").onchange = async () => {
+  const file = $("imageFile").files[0];
+  if (!file) return;
+  if (file.size > 1024 * 1024) {
+    $("status").textContent = "Please choose an image/GIF that is 1 MB or smaller.";
+    $("imageFile").value = "";
+    return;
+  }
+  if (!file.type.startsWith("image/")) {
+    $("status").textContent = "Please choose a valid image or GIF file.";
+    $("imageFile").value = "";
+    return;
+  }
+  showImagePreview(await readAsDataURL(file));
+};
+
+$("save").onclick = async () => {
+  try {
+    validKey();
+    const date = $("date").value;
+    const message = $("message").value.trim();
+    if (!date || !message) throw new Error("Choose a date and write a message.");
+
+    const old = entries[date] || {};
+    // Start with the old entry so any existing attachment or extra field survives.
+    const item = {
+      ...old,
+      nickname: $("nickname").value.trim(),
+      message,
+      closing: $("closing").value.trim()
+    };
+
+    const imageFile = $("imageFile").files[0];
+    if (imageFile) {
+      if (imageFile.size > 1024 * 1024) throw new Error("Image/GIF must be 1 MB or smaller.");
+      if (!imageFile.type.startsWith("image/")) throw new Error("Please choose a valid image or GIF file.");
+      item.image = await readAsDataURL(imageFile);
+    }
+
+    const audioFile = $("audioFile").files[0];
+    if (audioFile) {
+      if (audioFile.size > 3 * 1024 * 1024) throw new Error("MP3 must be 3 MB or smaller.");
+      if (!/\.mp3$/i.test(audioFile.name) && audioFile.type !== "audio/mpeg") {
+        throw new Error("Please choose an MP3 file.");
+      }
+      item.audio = await readAsDataURL(audioFile);
+    }
+
+    item.songTitle = $("songTitle").value.trim() || old.songTitle || "";
+    entries[date] = item;
+    render();
+    $("status").textContent = "Saved in this editor session. Existing attachments were kept unless replaced. Download the encrypted file to publish your changes.";
+  } catch (error) {
+    $("status").textContent = error.message;
+  }
+};
+
+$("remove").onclick = () => {
+  const date = $("date").value;
+  if (!date || !entries[date]) {
+    $("status").textContent = "No saved message for that date.";
+    return;
+  }
+  delete entries[date];
+  render();
+  loadSelected();
+  $("status").textContent = "Deleted from this editor session. Download the encrypted file to publish the change.";
+};
+
+$("export").onclick = async () => {
+  try {
+    const rawKey = decodeBase64(validKey());
+    const key = await crypto.subtle.importKey(
+      "raw", rawKey, {name:"AES-GCM"}, false, ["encrypt"]
+    );
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const data = new TextEncoder().encode(JSON.stringify(entries));
+    const cipher = await crypto.subtle.encrypt({name:"AES-GCM", iv}, key, data);
+
+    const output = {
+      version: 1,
+      algorithm: "AES-GCM",
+      iv: encodeBase64(iv),
+      salt: "",
+      ciphertext: encodeBase64(cipher)
+    };
+
+    const blob = new Blob([JSON.stringify(output, null, 2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "messages.enc.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    $("status").textContent = "Encrypted file downloaded. Upload it to GitHub and replace the old messages.enc.json.";
+  } catch (error) {
+    $("status").textContent = "Export failed: " + error.message;
+  }
+};
+
+render();
+</script>
+</body>
+</html>
