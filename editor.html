@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>From Me to You — Private Editor</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:24px;background:#f8eef1;color:#351522;font-family:Arial,sans-serif}
+main{max-width:720px;margin:20px auto;background:#fffaf8;border:1px solid #ead3da;border-radius:20px;padding:28px;box-shadow:0 12px 40px #4b1d2b12}
+h1{font:italic 36px Georgia;margin:0 0 4px}.sub{color:#805969;margin:0 0 24px}
+label{display:block;font-size:13px;font-weight:700;margin:16px 0 7px}
+input,textarea{width:100%;padding:12px;border:1px solid #d8bbc5;border-radius:10px;font:15px Arial;background:white;color:#351522}
+textarea{min-height:130px;resize:vertical}
+button{border:0;border-radius:10px;padding:12px 16px;background:#632d43;color:white;font-weight:700;cursor:pointer;margin:14px 8px 0 0}
+button.secondary{background:#ead3da;color:#351522}.hint{font-size:13px;line-height:1.55;color:#765563}
+#status{margin-top:16px;font-size:14px;color:#4f713f;white-space:pre-wrap}.entry{padding:14px 0;border-bottom:1px solid #ead3da}
+.preview{max-width:100%;max-height:180px;display:block;margin-top:10px;border-radius:10px}
+</style></head><body><main>
+<h1>From Me to You</h1><p class="sub">Private message editor</p>
+<p class="hint"><b>Important:</b> First paste your existing private key and import your current <code>messages.enc.json</code>. This loads your saved dates so you can edit them without losing them. Never create a new key for this update. After editing, download the newly encrypted file and replace the old <code>messages.enc.json</code> in GitHub.</p>
+<label for="key">Private encryption key</label><input id="key" type="text" autocomplete="off" placeholder="Paste your saved private key">
+<label for="importFile">Import your current encrypted messages file</label><input id="importFile" type="file" accept=".json,application/json">
+<label for="date">Message date</label><input id="date" type="date">
+<label for="nickname">Sender nickname for this date</label><input id="nickname" placeholder="e.g. Someone who cares">
+<label for="message">Message</label><textarea id="message" placeholder="Write your little message here…"></textarea>
+<label for="closing">Closing line for this date</label><input id="closing" placeholder="e.g. A little love, just for you.">
+<label for="imageFile">Optional image or GIF (max 1 MB)</label><input id="imageFile" type="file" accept="image/*">
+<img id="imagePreview" class="preview" alt="Image preview" hidden>
+<label for="audioFile">Music for this date — MP3 (max 3 MB)</label><input id="audioFile" type="file" accept="audio/mpeg,audio/mp3,.mp3">
+<label for="songTitle">Song title (optional)</label><input id="songTitle" placeholder="e.g. A song that reminds me of you">
+<p class="hint">The recipient will tap Play to listen while reading. Phones usually don't allow a website to start music automatically.</p>
+<button id="save">Save / update date</button><button class="secondary" id="remove">Delete date</button>
+<button id="export">Encrypt & download messages.enc.json</button>
+<div id="status"></div><div id="list"></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let entries={};
+const enc=b=>btoa(String.fromCharCode(...new Uint8Array(b)));
+function bytes(s){return Uint8Array.from(atob(s),c=>c.charCodeAt(0))}
+function validKey(){const k=$("key").value.trim();if(!k)throw Error("Paste your existing private key first.");return k}
+async function importEntries(file){
+  const k=validKey(),data=JSON.parse(await file.text());
+  if(data.algorithm!=="AES-GCM"||!data.iv||!data.ciphertext)throw Error("That doesn't look like the encrypted messages file.");
+  const key=await crypto.subtle.importKey("raw",bytes(k),{name:"AES-GCM"},false,["decrypt"]);
+  const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:bytes(data.iv)},key,bytes(data.ciphertext));
+  entries=JSON.parse(new TextDecoder().decode(plain));
+  render();$("status").textContent="Your saved messages have been imported. Choose a date to edit it.";
+}
+function render(){
+  const dates=Object.keys(entries).sort();
+  $("list").innerHTML=dates.length?'<h3>Saved dates</h3>'+dates.map(d=>`<div class="entry"><b>${d}</b> — ${escapeHtml(entries[d].nickname||"No nickname")}<br>${escapeHtml((entries[d].message||"").slice(0,100))}</div>`).join(""):"";
+}
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function loadSelected(){
+  const e=entries[$("date").value];
+  $("nickname").value=e?.nickname||"";$("message").value=e?.message||"";
+  $("closing").value=e?.closing||"";
+  $("songTitle").value=e?.songTitle||"";
+  $("imageFile").value="";$("audioFile").value="";
+  $("imagePreview").hidden=true;
+  $("status").textContent=e?(e.audio?"This date has music saved. Choose a new MP3 to replace it.":"Date loaded."): "No saved message for this date yet.";
+}
+$("importFile").onchange=async()=>{try{const f=$("importFile").files[0];if(f)await importEntries(f)}catch(e){$("status").textContent="Import failed: "+e.message+" Check that you pasted the same key used for this file."}};
+$("date").onchange=loadSelected;
+$("imageFile").onchange=()=>{const f=$("imageFile").files[0];if(!f)return;if(f.size>1024*1024){$("status").textContent="Please choose an image/GIF smaller than 1 MB."; $("imageFile").value="";return}const reader=new FileReader();reader.onload=()=>{$("imagePreview").src=reader.result;$("imagePreview").hidden=false};reader.readAsDataURL(f)};
+function readAsDataURL(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)})}
+$("save").onclick=async()=>{
+ try{
+  validKey();const d=$("date").value,m=$("message").value.trim();
+  if(!d||!m)throw Error("Choose a date and write a message.");
+  const old=entries[d]||{};
+  const item={nickname:$("nickname").value.trim(),message:m,closing:$("closing").value.trim()};
+  if($("imageFile").files[0]){const f=$("imageFile").files[0];if(f.size>1024*1024)throw Error("Image/GIF must be 1 MB or smaller.");item.image=await readAsDataURL(f)}
+  else if(old.image)item.image=old.image;
+  if($("audioFile").files[0]){const f=$("audioFile").files[0];if(f.size>3*1024*1024)throw Error("MP3 must be 3 MB or smaller.");if(!/\.mp3$/i.test(f.name)&&f.type!=="audio/mpeg")throw Error("Please choose an MP3 file.");item.audio=await readAsDataURL(f)}
+  else if(old.audio)item.audio=old.audio;
+  item.songTitle=$("songTitle").value.trim()||old.songTitle||"";
+  entries[d]=item;render();$("status").textContent="Saved in this editor session. Download the encrypted file to publish your changes.";
+ }catch(e){$("status").textContent=e.message}
+};
+$("remove").onclick=()=>{const d=$("date").value;if(!d||!entries[d]){$("status").textContent="No saved message for that date.";return}delete entries[d];render();loadSelected();$("status").textContent="Deleted from this editor session. Download the encrypted file to publish the change."};
+$("export").onclick=async()=>{
+ try{
+  const raw=bytes(validKey()),key=await crypto.subtle.importKey("raw",raw,{name:"AES-GCM"},false,["encrypt"]);
+  const iv=crypto.getRandomValues(new Uint8Array(12)),data=new TextEncoder().encode(JSON.stringify(entries));
+  const cipher=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,data);
+  const out={version:1,algorithm:"AES-GCM",iv:enc(iv),salt:"",ciphertext:enc(cipher)};
+  const blob=new Blob([JSON.stringify(out,null,2)],{type:"application/json"}),a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);a.download="messages.enc.json";a.click();URL.revokeObjectURL(a.href);
+  $("status").textContent="Encrypted file downloaded. Upload it to your GitHub repository and replace the old messages.enc.json.";
+ }catch(e){$("status").textContent=e.message}
+};
+render();
+</script></body></html>
