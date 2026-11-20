@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "algorithm": "AES-GCM",
+  "iv": "wTSJtApdK7JHGFFw",
+  "salt": "",
+  "ciphertext": "ID/OEQjvzO1NdeEvZkm21Imm"
+}
